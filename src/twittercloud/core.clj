@@ -36,7 +36,7 @@
   {:tag HttpRequest}
   [^HttpRequest request auth]
   (let [{:keys [consumer-key consumer-secret access-token access-token-secret]} auth
-        oauth (OAuth1. consumer-key consumer-secret access-token access-token-secret)]
+        oauth (new OAuth1 consumer-key consumer-secret access-token access-token-secret)]
     (.signRequest oauth request "")
     request))
 
@@ -71,5 +71,37 @@
       (execute)))
 
 
-(defn -main [& args]
-  (println "Hello World!"))
+(defn create-example
+  [^InputStream is times]
+  (with-open [br ^BufferedReader (io/reader is)
+              ow (io/writer (str "example-" times ".json"))]
+    (binding [*out* ow]
+      (dotimes [i times]
+        (println (.readLine br))))
+    ))
+
+
+(defn tweet-frequencies [source max]
+  (with-open [in ^BufferedReader (io/reader source)]
+    (binding [*print-dup* true]
+      (transduce
+        (comp (filter #(re-find #"lang\":\"en\"" %))
+              (keep #(second (re-find #"text\":\"([^\"]+)\"" %)))
+              (mapcat #(str/split % #"\s+"))
+              (filter #(re-find #"^#" %)))
+        (fn
+          ([counts x]
+           (assoc! counts x (inc (get counts x 0))))
+          ([counts]
+            (persistent! counts)))
+        (transient {})
+        ((fn next []
+           (lazy-seq
+             (when-let [line (.readLine in)]
+               (cons line (next))))))
+        )))
+
+
+
+  (defn -main [& args]
+    (println "Hello World!")))
