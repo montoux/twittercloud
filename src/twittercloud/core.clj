@@ -1,5 +1,5 @@
 (ns twittercloud.core
-  (:gen-class)
+  "An example application for demonstrating lazy data processing in Clojure."
   (:require [clojure.data.json :as json]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
@@ -11,7 +11,8 @@
            (java.nio.file Files Path Paths)
            (org.apache.http HttpRequest HttpResponse)
            (org.apache.http.impl.client DefaultHttpClient)
-           (org.apache.http.client.methods HttpGet HttpPost)))
+           (org.apache.http.client.methods HttpGet HttpPost))
+  (:gen-class))
 
 
 (extend-type Path
@@ -20,11 +21,16 @@
     (Files/newBufferedReader p StandardCharsets/UTF_8)))
 
 
-(defn resolve-path [base & more]
+(defn resolve-path
+  "Resolve a file system path."
+  [base & more]
   (Paths/get base (into-array String more)))
 
 
-(defn get-auth []
+(defn get-auth
+  "Load twitter application secrets from an EDN secret file stored in the user's home directory.
+  See https://apps.twitter.com for generating secrets."
+  []
   (-> (System/getenv "HOME")
       (resolve-path ".twitter" "auth.clj")
       (slurp)
@@ -44,9 +50,9 @@
 (defn execute
   "Performs an HttpRequest. Returns an InputStream on 200 response, otherwise throws."
   [^HttpRequest request]
-  (let [client (DefaultHttpClient.)
+  (let [client   (DefaultHttpClient.)
         response ^HttpResponse (.execute client request)
-        status (.getStatusLine response)]
+        status   (.getStatusLine response)]
     (when (not= 200 (.getStatusCode status))
       (throw (IllegalStateException. (.getReasonPhrase status))))
     (.getContent (.getEntity response))))
@@ -72,36 +78,55 @@
 
 
 (defn create-example
+  "Reads the specified number of lines from the input stream into an example. Returns the name of the generated file."
   [^InputStream is times]
-  (with-open [br ^BufferedReader (io/reader is)
-              ow (io/writer (str "example-" times ".json"))]
-    (binding [*out* ow]
-      (dotimes [i times]
-        (println (.readLine br))))
-    ))
+  (let [fname (str "example-" times ".json")]
+    (with-open [br ^BufferedReader (io/reader is)
+                ow (io/writer fname)]
+      (binding [*out* ow]
+        (dotimes [i times]
+          (println (.readLine br)))))
+    fname))
 
 
-(defn tweet-frequencies [source max]
-  (with-open [in ^BufferedReader (io/reader source)]
-    (binding [*print-dup* true]
-      (transduce
-        (comp (filter #(re-find #"lang\":\"en\"" %))
-              (keep #(second (re-find #"text\":\"([^\"]+)\"" %)))
-              (mapcat #(str/split % #"\s+"))
-              (filter #(re-find #"^#" %)))
-        (fn
-          ([counts x]
-           (assoc! counts x (inc (get counts x 0))))
-          ([counts]
-            (persistent! counts)))
-        (transient {})
-        ((fn next []
-           (lazy-seq
-             (when-let [line (.readLine in)]
-               (cons line (next))))))
-        )))
+(defn lines
+  "Returns a lazy sequence of lines from the given reader."
+  [^BufferedReader source]
+  (lazy-seq
+    (when-let [line (.readLine source)]
+      (cons line (lines source)))))
 
 
+(defn count-tag
+  "Accumulate tag frequencies by incrementing the current count for the given tag."
+  [frequencies tag]
+  (update frequencies tag (fnil inc 0)))
 
-  (defn -main [& args]
-    (println "Hello World!")))
+
+(defn tweet-frequencies
+  "Returns a map of twitter hash-tag frequencies for a given stream of tweets (as lines of text)."
+  [tweets]
+  (let [tweets (->> tweets
+                    (map json/read-json)                    ;; parse tweets from strings
+                    (filter (comp #{"en"} :lang))           ;; keep english tweets
+                    (keep :text)                            ;; get text from the tweets
+                    )
+        tags   (->> tweets
+                    ;; (map #(do (println %) %))            ;; debugging: print tweets as they are processed
+                    (mapcat #(str/split % #"\s+"))          ;; tokenize words
+                    (filter #(re-find #"^#" %))             ;; only keep tags
+                    )]
+    (reduce count-tag {} tags)))
+
+
+(defn -main [& {:as args}]
+  (let [source (if-let [file (get args "file")]
+                 file
+                 (sample-tweets (get-auth)))]
+    (with-open [in ^BufferedReader (io/reader source)]
+      (let [tweets (lines in)
+            tweets (if (contains? args "max")
+                     (take (Long/parseLong (get args "max")) tweets)
+                     tweets)]
+        (tweet-frequencies tweets)
+        ))))
